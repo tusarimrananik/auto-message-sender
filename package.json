@@ -1,0 +1,21 @@
+{
+  "name": "autochat-mvp",
+  "version": "1.0.0",
+  "description": "Local MVP for scripted two-profile web chat automation.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "keywords": [
+    "chrome-extension",
+    "express",
+    "polling",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}

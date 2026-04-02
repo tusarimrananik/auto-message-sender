@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AutoChat MVP</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <h1>AutoChat MVP</h1>
+
+      <section class="panel">
+        <label for="profileIdentity">Profile identity</label>
+        <select id="profileIdentity">
+          <option value="A">A</option>
+          <option value="B">B</option>
+        </select>
+
+        <label for="siteMode">Mode</label>
+        <select id="siteMode">
+          <option value="test">Test page</option>
+          <option value="live" selected>Real site (Messenger)</option>
+        </select>
+      </section>
+
+      <section class="panel button-grid">
+        <button id="loadSampleButton">Load sample script</button>
+        <button id="startButton">Start</button>
+        <button id="stopButton">Stop</button>
+        <button id="resetButton">Reset</button>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="status-row">
+          <span>Server</span>
+          <strong id="serverStatus">Checking...</strong>
+        </div>
+        <div class="status-row">
+          <span>Running</span>
+          <strong id="runningStatus">-</strong>
+        </div>
+        <div class="status-row">
+          <span>Current step</span>
+          <strong id="currentStepStatus">-</strong>
+        </div>
+        <div class="status-row">
+          <span>Next sender</span>
+          <strong id="nextSenderStatus">-</strong>
+        </div>
+        <div class="status-row">
+          <span>Next text</span>
+          <strong id="nextTextStatus">-</strong>
+        </div>
+      </section>
+
+      <p id="messageText" class="message"></p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
