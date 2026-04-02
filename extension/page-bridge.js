@@ -51,10 +51,42 @@
     target.dispatchEvent(new KeyboardEvent("keyup", init));
   }
 
-  function insertViaClipboard(el, text) {
+  function getComposerText(el) {
+    return (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function clearComposer(el) {
     try {
       el.focus();
       document.execCommand("selectAll");
+      document.execCommand("delete");
+    } catch (error) {
+      // Fall through to the DOM reset below.
+    }
+
+    el.innerHTML = '<p dir="auto"><br></p>';
+
+    el.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        cancelable: false,
+        inputType: "deleteContentBackward",
+        data: null
+      })
+    );
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    const target = el.querySelector("p") || el;
+    range.selectNodeContents(target);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function insertViaClipboard(el, text) {
+    try {
+      clearComposer(el);
 
       const dt = new DataTransfer();
       dt.setData("text/plain", text);
@@ -67,7 +99,7 @@
         })
       );
 
-      return el.textContent.trim() !== "" || el.innerText.trim() !== "";
+      return getComposerText(el) === text.trim();
     } catch (error) {
       return false;
     }
@@ -75,9 +107,7 @@
 
   function insertViaInputEvent(el, text) {
     try {
-      el.focus();
-      document.execCommand("selectAll");
-      document.execCommand("delete");
+      clearComposer(el);
 
       el.dispatchEvent(
         new InputEvent("beforeinput", {
@@ -113,7 +143,7 @@
       selection.removeAllRanges();
       selection.addRange(range);
 
-      return true;
+      return getComposerText(el) === text.trim();
     } catch (error) {
       return false;
     }
@@ -121,12 +151,26 @@
 
   function insertViaExecCommand(el, text) {
     try {
-      el.focus();
-      document.execCommand("selectAll");
-      return document.execCommand("insertText", false, text);
+      clearComposer(el);
+      document.execCommand("insertText", false, text);
+      return getComposerText(el) === text.trim();
     } catch (error) {
       return false;
     }
+  }
+
+  function insertMessengerText(el, text) {
+    const normalizedText = text.trim();
+
+    if (insertViaClipboard(el, normalizedText)) {
+      return true;
+    }
+
+    if (insertViaInputEvent(el, normalizedText)) {
+      return true;
+    }
+
+    return insertViaExecCommand(el, normalizedText);
   }
 
   window.addEventListener(SEND_EVENT, (event) => {
@@ -143,13 +187,7 @@
         return;
       }
 
-      let inserted = insertViaClipboard(input, text);
-      if (!inserted) {
-        inserted = insertViaInputEvent(input, text);
-      }
-      if (!inserted) {
-        inserted = insertViaExecCommand(input, text);
-      }
+      const inserted = insertMessengerText(input, text);
 
       if (!inserted) {
         emitResult({ ok: false, error: "Could not insert text into Messenger input." });
