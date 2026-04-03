@@ -60,6 +60,10 @@ async function ensurePageInjection() {
   return chrome.runtime.sendMessage({ type: "AUTOCHAT_ENSURE_INJECTION" });
 }
 
+async function triggerDispatchNow() {
+  return chrome.runtime.sendMessage({ type: "AUTOCHAT_RUN_DISPATCH_NOW" });
+}
+
 function renderState(state) {
   serverStatus.textContent = "Connected";
   runningStatus.textContent = state.running ? "Yes" : "No";
@@ -93,11 +97,13 @@ async function initializePopup() {
 
 profileSelect.addEventListener("change", async () => {
   await saveStoredSettings();
+  await triggerDispatchNow();
   setMessage(`Saved profile identity: ${profileSelect.value}`);
 });
 
 modeSelect.addEventListener("change", async () => {
   await saveStoredSettings();
+  await triggerDispatchNow();
   setMessage(`Saved mode: ${modeSelect.value}`);
 });
 
@@ -105,6 +111,7 @@ loadSampleButton.addEventListener("click", async () => {
   try {
     await saveStoredSettings();
     await callServer("/script/load", { method: "POST", body: {} });
+    await triggerDispatchNow();
     await refreshState();
     setMessage("Sample script loaded.");
   } catch (error) {
@@ -121,6 +128,7 @@ startButton.addEventListener("click", async () => {
     }
 
     await callServer("/run/start", { method: "POST", body: {} });
+    await triggerDispatchNow();
     await refreshState();
     setMessage("Automation started and page injection checked.");
   } catch (error) {
@@ -131,6 +139,7 @@ startButton.addEventListener("click", async () => {
 stopButton.addEventListener("click", async () => {
   try {
     await callServer("/run/stop", { method: "POST", body: {} });
+    await triggerDispatchNow();
     await refreshState();
     setMessage("Automation stopped.");
   } catch (error) {
@@ -141,6 +150,7 @@ stopButton.addEventListener("click", async () => {
 resetButton.addEventListener("click", async () => {
   try {
     await callServer("/reset", { method: "POST", body: {} });
+    await triggerDispatchNow();
     await refreshState();
     setMessage("State reset.");
   } catch (error) {

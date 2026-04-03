@@ -1,9 +1,15 @@
 const express = require("express");
 const cors = require("cors");
+const http = require("http");
 const path = require("path");
+const { WebSocketServer, WebSocket } = require("ws");
 
 const app = express();
 const PORT = 3000;
+const SOCKET_PATH = "/ws";
+const DISPATCH_TIMEOUT_MS = 45000;
+const RETRY_DELAY_MS = 1000;
+const HEARTBEAT_INTERVAL_MS = 15000;
 
 const DEFAULT_SAMPLE_SCRIPT = [
   { sender: "A", text: "Hi" },
@@ -24,6 +30,9 @@ const state = {
   currentStep: 0,
   lastCompletedStep: -1,
   lastProcessedEventId: 0,
+  nextSocketId: 1,
+  nextDispatchId: 1,
+  activeDispatch: null,
   script: cloneScript(DEFAULT_SAMPLE_SCRIPT),
   delayMs: {
     A: 2000,
@@ -31,12 +40,19 @@ const state = {
   }
 };
 
+const workers = new Map();
+let dispatchRetryTimeoutId = null;
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 function isValidProfile(profile) {
   return profile === "A" || profile === "B";
+}
+
+function isValidSiteMode(siteMode) {
+  return siteMode === "test" || siteMode === "live";
 }
 
 function isValidScriptStep(step) {
@@ -53,6 +69,18 @@ function getCurrentScriptStep() {
   return state.script[state.currentStep] || null;
 }
 
+function getProfileWorkerSummary(profile) {
+  const connectedWorkers = Array.from(workers.values()).filter((worker) => worker.profile === profile);
+  const preferredWorker = getPreferredWorker(profile);
+
+  return {
+    connected: connectedWorkers.length > 0,
+    connectionCount: connectedWorkers.length,
+    siteMode: preferredWorker ? preferredWorker.siteMode : null,
+    lastSeenAt: preferredWorker ? preferredWorker.lastSeenAt : null
+  };
+}
+
 function buildStateResponse() {
   const current = getCurrentScriptStep();
 
@@ -65,6 +93,20 @@ function buildStateResponse() {
     delayMs: state.delayMs,
     totalSteps: state.script.length,
     finished: state.currentStep >= state.script.length,
+    activeDispatch: state.activeDispatch
+      ? {
+          dispatchId: state.activeDispatch.dispatchId,
+          stepIndex: state.activeDispatch.stepIndex,
+          profile: state.activeDispatch.profile,
+          socketId: state.activeDispatch.socketId,
+          siteMode: state.activeDispatch.siteMode,
+          createdAt: state.activeDispatch.createdAt
+        }
+      : null,
+    workers: {
+      A: getProfileWorkerSummary("A"),
+      B: getProfileWorkerSummary("B")
+    },
     nextStep: current
       ? {
           index: state.currentStep,
@@ -80,6 +122,221 @@ function resetProgress() {
   state.currentStep = 0;
   state.lastCompletedStep = -1;
   state.lastProcessedEventId = 0;
+  clearActiveDispatch();
+}
+
+function sendJson(target, payload) {
+  const ws = target instanceof WebSocket ? target : target && target.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  ws.send(JSON.stringify(payload));
+  return true;
+}
+
+function broadcastState() {
+  const payload = {
+    type: "state_update",
+    state: buildStateResponse()
+  };
+
+  for (const worker of workers.values()) {
+    sendJson(worker, payload);
+  }
+}
+
+function updateWorkerSeen(worker) {
+  worker.lastSeenAt = Date.now();
+}
+
+function getPreferredWorker(profile) {
+  const matchingWorkers = Array.from(workers.values()).filter((worker) => worker.profile === profile);
+
+  if (matchingWorkers.length === 0) {
+    return null;
+  }
+
+  matchingWorkers.sort((left, right) => right.lastSeenAt - left.lastSeenAt);
+  return matchingWorkers[0];
+}
+
+function clearDispatchRetry() {
+  if (dispatchRetryTimeoutId !== null) {
+    clearTimeout(dispatchRetryTimeoutId);
+    dispatchRetryTimeoutId = null;
+  }
+}
+
+function queueDispatch(delayMs = 0) {
+  clearDispatchRetry();
+  dispatchRetryTimeoutId = setTimeout(() => {
+    dispatchRetryTimeoutId = null;
+    dispatchNextStep("queued");
+  }, delayMs);
+}
+
+function clearActiveDispatch() {
+  if (state.activeDispatch && state.activeDispatch.timeoutId) {
+    clearTimeout(state.activeDispatch.timeoutId);
+  }
+
+  state.activeDispatch = null;
+}
+
+function failActiveDispatch(reason) {
+  if (!state.activeDispatch) {
+    return;
+  }
+
+  console.log(`[AUTOCHAT] Dispatch ${state.activeDispatch.dispatchId} failed: ${reason}`);
+  clearActiveDispatch();
+  broadcastState();
+  queueDispatch(RETRY_DELAY_MS);
+}
+
+function dispatchNextStep(reason = "unknown") {
+  if (!state.running || state.activeDispatch) {
+    return;
+  }
+
+  const current = getCurrentScriptStep();
+  if (!current) {
+    state.running = false;
+    broadcastState();
+    return;
+  }
+
+  const worker = getPreferredWorker(current.sender);
+  if (!worker) {
+    return;
+  }
+
+  const dispatch = {
+    dispatchId: state.nextDispatchId,
+    stepIndex: state.currentStep,
+    profile: current.sender,
+    socketId: worker.socketId,
+    siteMode: worker.siteMode,
+    createdAt: Date.now(),
+    timeoutId: null
+  };
+
+  state.nextDispatchId += 1;
+  dispatch.timeoutId = setTimeout(() => {
+    if (state.activeDispatch && state.activeDispatch.dispatchId === dispatch.dispatchId) {
+      failActiveDispatch(`Timed out after ${DISPATCH_TIMEOUT_MS}ms.`);
+    }
+  }, DISPATCH_TIMEOUT_MS);
+
+  state.activeDispatch = dispatch;
+
+  const sent = sendJson(worker, {
+    type: "dispatch_step",
+    dispatchId: dispatch.dispatchId,
+    stepIndex: dispatch.stepIndex,
+    sender: current.sender,
+    text: current.text,
+    delayMs: state.delayMs[current.sender] || 0,
+    siteMode: worker.siteMode
+  });
+
+  if (!sent) {
+    failActiveDispatch("Selected worker socket was not open.");
+    return;
+  }
+
+  console.log(
+    `[AUTOCHAT] Dispatched step ${dispatch.stepIndex} for profile ${dispatch.profile} ` +
+    `to socket ${dispatch.socketId} via ${reason}.`
+  );
+  broadcastState();
+}
+
+function handleWorkerRegistration(worker, message) {
+  if (!isValidProfile(message.profile)) {
+    sendJson(worker, { type: "error", error: 'Invalid "profile". Use "A" or "B".' });
+    return;
+  }
+
+  if (!isValidSiteMode(message.siteMode)) {
+    sendJson(worker, { type: "error", error: 'Invalid "siteMode". Use "test" or "live".' });
+    return;
+  }
+
+  worker.profile = message.profile;
+  worker.siteMode = message.siteMode;
+  updateWorkerSeen(worker);
+
+  sendJson(worker, {
+    type: "registered",
+    socketId: worker.socketId,
+    state: buildStateResponse()
+  });
+
+  console.log(
+    `[AUTOCHAT] Worker ${worker.socketId} registered as profile ${worker.profile} in ${worker.siteMode} mode.`
+  );
+
+  broadcastState();
+  queueDispatch(0);
+}
+
+function handleStepResult(worker, message) {
+  if (!state.activeDispatch || state.activeDispatch.dispatchId !== message.dispatchId) {
+    return;
+  }
+
+  if (state.activeDispatch.socketId !== worker.socketId) {
+    return;
+  }
+
+  const dispatch = state.activeDispatch;
+
+  if (!message.ok) {
+    failActiveDispatch(message.error || "Worker reported send failure.");
+    return;
+  }
+
+  const current = getCurrentScriptStep();
+  if (
+    !state.running ||
+    !current ||
+    dispatch.stepIndex !== state.currentStep ||
+    dispatch.profile !== current.sender
+  ) {
+    clearActiveDispatch();
+    broadcastState();
+    queueDispatch(0);
+    return;
+  }
+
+  state.lastCompletedStep = state.currentStep;
+  state.currentStep += 1;
+  state.lastProcessedEventId += 1;
+  clearActiveDispatch();
+
+  if (state.currentStep >= state.script.length) {
+    state.running = false;
+  }
+
+  console.log(
+    `[AUTOCHAT] Worker ${worker.socketId} completed step ${dispatch.stepIndex} for profile ${dispatch.profile}.`
+  );
+
+  broadcastState();
+  queueDispatch(0);
+}
+
+function removeWorker(worker) {
+  workers.delete(worker.socketId);
+
+  if (state.activeDispatch && state.activeDispatch.socketId === worker.socketId) {
+    failActiveDispatch("Assigned worker disconnected.");
+  } else {
+    broadcastState();
+    queueDispatch(0);
+  }
 }
 
 app.get("/state", (req, res) => {
@@ -107,6 +364,8 @@ app.post("/config/profile-delay", (req, res) => {
   }
 
   state.delayMs[profile] = delayMs;
+  broadcastState();
+  queueDispatch(0);
 
   res.json({
     ok: true,
@@ -129,7 +388,6 @@ app.post("/script/load", (req, res) => {
   }
 
   const invalidStepIndex = scriptToLoad.findIndex((step) => !isValidScriptStep(step));
-
   if (invalidStepIndex !== -1) {
     return res.status(400).json({
       ok: false,
@@ -139,6 +397,7 @@ app.post("/script/load", (req, res) => {
 
   state.script = cloneScript(scriptToLoad);
   resetProgress();
+  broadcastState();
 
   res.json({
     ok: true,
@@ -160,7 +419,10 @@ app.post("/run/start", (req, res) => {
     state.lastCompletedStep = -1;
   }
 
+  clearActiveDispatch();
   state.running = true;
+  broadcastState();
+  queueDispatch(0);
 
   res.json({
     ok: true,
@@ -170,7 +432,9 @@ app.post("/run/start", (req, res) => {
 });
 
 app.post("/run/stop", (req, res) => {
+  clearActiveDispatch();
   state.running = false;
+  broadcastState();
 
   res.json({
     ok: true,
@@ -179,75 +443,9 @@ app.post("/run/stop", (req, res) => {
   });
 });
 
-app.post("/step/complete", (req, res) => {
-  const { stepIndex, profile } = req.body || {};
-
-  if (!Number.isInteger(stepIndex) || stepIndex < 0) {
-    return res.status(400).json({
-      ok: false,
-      error: 'Invalid "stepIndex". Use a non-negative integer.'
-    });
-  }
-
-  if (!isValidProfile(profile)) {
-    return res.status(400).json({
-      ok: false,
-      error: 'Invalid "profile". Use "A" or "B".'
-    });
-  }
-
-  if (!state.running) {
-    return res.status(409).json({
-      ok: false,
-      error: "Automation is not running.",
-      state: buildStateResponse()
-    });
-  }
-
-  const current = getCurrentScriptStep();
-
-  if (!current) {
-    state.running = false;
-    return res.status(409).json({
-      ok: false,
-      error: "Script is already finished.",
-      state: buildStateResponse()
-    });
-  }
-
-  if (stepIndex !== state.currentStep) {
-    return res.status(409).json({
-      ok: false,
-      error: `Step mismatch. Server expects step ${state.currentStep}.`,
-      state: buildStateResponse()
-    });
-  }
-
-  if (current.sender !== profile) {
-    return res.status(409).json({
-      ok: false,
-      error: `Profile mismatch. Current step belongs to ${current.sender}.`,
-      state: buildStateResponse()
-    });
-  }
-
-  state.lastCompletedStep = state.currentStep;
-  state.currentStep += 1;
-  state.lastProcessedEventId += 1;
-
-  if (state.currentStep >= state.script.length) {
-    state.running = false;
-  }
-
-  res.json({
-    ok: true,
-    message: "Step completed.",
-    state: buildStateResponse()
-  });
-});
-
 app.post("/reset", (req, res) => {
   resetProgress();
+  broadcastState();
 
   res.json({
     ok: true,
@@ -256,7 +454,83 @@ app.post("/reset", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: SOCKET_PATH });
+
+wss.on("connection", (ws) => {
+  const worker = {
+    socketId: state.nextSocketId,
+    ws,
+    profile: null,
+    siteMode: "live",
+    connectedAt: Date.now(),
+    lastSeenAt: Date.now()
+  };
+
+  state.nextSocketId += 1;
+  workers.set(worker.socketId, worker);
+
+  sendJson(worker, {
+    type: "welcome",
+    socketId: worker.socketId,
+    state: buildStateResponse()
+  });
+
+  ws.on("message", (buffer) => {
+    updateWorkerSeen(worker);
+
+    let message;
+    try {
+      message = JSON.parse(buffer.toString());
+    } catch (error) {
+      sendJson(worker, { type: "error", error: "Invalid JSON message." });
+      return;
+    }
+
+    if (!message || typeof message.type !== "string") {
+      sendJson(worker, { type: "error", error: "Message must include a string type." });
+      return;
+    }
+
+    if (message.type === "register_worker") {
+      handleWorkerRegistration(worker, message);
+      return;
+    }
+
+    if (message.type === "heartbeat_ack") {
+      return;
+    }
+
+    if (message.type === "step_result") {
+      handleStepResult(worker, message);
+      return;
+    }
+
+    sendJson(worker, { type: "error", error: `Unsupported message type "${message.type}".` });
+  });
+
+  ws.on("close", () => {
+    removeWorker(worker);
+  });
+
+  ws.on("error", (error) => {
+    console.log(`[AUTOCHAT] Worker ${worker.socketId} socket error: ${error.message}`);
+  });
+
+  broadcastState();
+});
+
+setInterval(() => {
+  for (const worker of workers.values()) {
+    sendJson(worker, {
+      type: "heartbeat",
+      now: Date.now()
+    });
+  }
+}, HEARTBEAT_INTERVAL_MS);
+
+server.listen(PORT, () => {
   console.log(`[AUTOCHAT] Server running at http://localhost:${PORT}`);
+  console.log(`[AUTOCHAT] WebSocket endpoint available at ws://localhost:${PORT}${SOCKET_PATH}`);
   console.log(`[AUTOCHAT] Test page available at http://localhost:${PORT}/test-chat.html`);
 });

@@ -1,5 +1,12 @@
 const SERVER_BASE_URL = "http://localhost:3000";
+const SERVER_WS_URL = "ws://localhost:3000/ws";
 const LOG_PREFIX = "[AUTOCHAT]";
+const SOCKET_RECONNECT_DELAY_MS = 2000;
+
+let socket = null;
+let reconnectTimerId = null;
+let socketConnected = false;
+let activeDispatchId = null;
 
 function log(...args) {
   console.log(LOG_PREFIX, ...args);
@@ -7,6 +14,46 @@ function log(...args) {
 
 function isSupportedAutohchatUrl(urlString) {
   return isMatchingChatUrl(urlString, "live") || isMatchingChatUrl(urlString, "test");
+}
+
+function isMatchingChatUrl(urlString, siteMode) {
+  if (typeof urlString !== "string" || !urlString) {
+    return false;
+  }
+
+  try {
+    const url = new URL(urlString);
+    const hostname = url.hostname.toLowerCase();
+    const pathname = url.pathname.toLowerCase();
+
+    if (siteMode === "test") {
+      return (
+        (hostname === "localhost" || hostname === "127.0.0.1") &&
+        pathname.startsWith("/test-chat.html")
+      );
+    }
+
+    const isMessengerHost =
+      hostname === "messenger.com" || hostname.endsWith(".messenger.com");
+    const isFacebookHost =
+      hostname === "facebook.com" || hostname.endsWith(".facebook.com");
+    const isMessagesPath = pathname.startsWith("/messages");
+
+    return isMessengerHost || (isFacebookHost && isMessagesPath);
+  } catch (error) {
+    return false;
+  }
+}
+
+async function getStoredSettings() {
+  return chrome.storage.local.get({
+    profileIdentity: "A",
+    siteMode: "live"
+  });
+}
+
+async function pingTab(tabId) {
+  return chrome.tabs.sendMessage(tabId, { type: "AUTOCHAT_PING" });
 }
 
 async function injectScriptsIntoTab(tab) {
@@ -56,55 +103,12 @@ async function injectIntoExistingSupportedTabs() {
   }
 }
 
-function isMatchingChatUrl(urlString, siteMode) {
-  if (typeof urlString !== "string" || !urlString) {
-    return false;
-  }
-
-  try {
-    const url = new URL(urlString);
-    const hostname = url.hostname.toLowerCase();
-    const pathname = url.pathname.toLowerCase();
-
-    if (siteMode === "test") {
-      return (
-        (hostname === "localhost" || hostname === "127.0.0.1") &&
-        pathname.startsWith("/test-chat.html")
-      );
-    }
-
-    const isMessengerHost =
-      hostname === "messenger.com" || hostname.endsWith(".messenger.com");
-    const isFacebookHost =
-      hostname === "facebook.com" || hostname.endsWith(".facebook.com");
-    const isMessagesPath = pathname.startsWith("/messages");
-
-    // Messenger can be on messenger.com directly, or inside facebook.com/messages.
-    return isMessengerHost || (isFacebookHost && isMessagesPath);
-  } catch (error) {
-    return false;
-  }
-}
-
-async function getStoredSettings() {
-  return chrome.storage.local.get({
-    profileIdentity: "A",
-    siteMode: "live"
-  });
-}
-
-async function pingTab(tabId) {
-  return chrome.tabs.sendMessage(tabId, { type: "AUTOCHAT_PING" });
-}
-
 async function ensureContentScriptInjected() {
   const settings = await getStoredSettings();
   const tabs = await chrome.tabs.query({});
 
   const matchingTabs = tabs.filter(
-    (tab) =>
-      tab.id &&
-      isMatchingChatUrl(tab.url, settings.siteMode)
+    (tab) => tab.id && isMatchingChatUrl(tab.url, settings.siteMode)
   );
 
   if (matchingTabs.length === 0) {
@@ -129,44 +133,205 @@ async function ensureContentScriptInjected() {
 
 async function fetchServerState() {
   const response = await fetch(`${SERVER_BASE_URL}/state`);
-  if (!response.ok) {
-    throw new Error(`State request failed with status ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.state;
-}
-
-async function postStepComplete(stepIndex, profile) {
-  const response = await fetch(`${SERVER_BASE_URL}/step/complete`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ stepIndex, profile })
-  });
-
   const data = await response.json();
 
   if (!response.ok || !data.ok) {
-    throw new Error(data.error || "Unknown completion error");
+    throw new Error(data.error || `State request failed with status ${response.status}`);
   }
 
   return data.state;
+}
+
+function scheduleReconnect(delayMs = SOCKET_RECONNECT_DELAY_MS) {
+  if (reconnectTimerId !== null) {
+    clearTimeout(reconnectTimerId);
+  }
+
+  reconnectTimerId = setTimeout(() => {
+    reconnectTimerId = null;
+    connectSocket();
+  }, delayMs);
+}
+
+function sendSocketMessage(payload) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  socket.send(JSON.stringify(payload));
+  return true;
+}
+
+async function sendRegistration() {
+  const settings = await getStoredSettings();
+
+  sendSocketMessage({
+    type: "register_worker",
+    profile: settings.profileIdentity,
+    siteMode: settings.siteMode
+  });
+}
+
+async function findDispatchTab(siteMode) {
+  const tabs = await chrome.tabs.query({});
+  const matchingTabs = tabs.filter((tab) => tab.id && isMatchingChatUrl(tab.url, siteMode));
+
+  if (matchingTabs.length === 0) {
+    return null;
+  }
+
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (activeTab && activeTab.id && isMatchingChatUrl(activeTab.url, siteMode)) {
+    return activeTab;
+  }
+
+  return matchingTabs[0];
+}
+
+async function sendStepToTab(tabId, payload) {
+  return chrome.tabs.sendMessage(tabId, {
+    type: "AUTOCHAT_SEND_STEP",
+    ...payload
+  });
+}
+
+async function handleDispatchStep(message) {
+  if (activeDispatchId !== null) {
+    sendSocketMessage({
+      type: "step_result",
+      dispatchId: message.dispatchId,
+      ok: false,
+      error: `Worker already handling dispatch ${activeDispatchId}.`
+    });
+    return;
+  }
+
+  activeDispatchId = message.dispatchId;
+
+  try {
+    const settings = await getStoredSettings();
+    if (settings.profileIdentity !== message.sender) {
+      throw new Error(
+        `Profile mismatch. Worker is ${settings.profileIdentity}, dispatch is for ${message.sender}.`
+      );
+    }
+
+    const targetTab = await findDispatchTab(settings.siteMode);
+    if (!targetTab || !targetTab.id) {
+      throw new Error(`No ${settings.siteMode} tab available for profile ${settings.profileIdentity}.`);
+    }
+
+    await injectScriptsIntoTab(targetTab);
+
+    const result = await sendStepToTab(targetTab.id, {
+      text: message.text,
+      sender: message.sender,
+      stepIndex: message.stepIndex,
+      delayMs: message.delayMs || 0
+    });
+
+    sendSocketMessage({
+      type: "step_result",
+      dispatchId: message.dispatchId,
+      ok: Boolean(result && result.ok),
+      error: result && result.ok ? null : result && result.error ? result.error : "Send failed.",
+      tabId: targetTab.id
+    });
+  } catch (error) {
+    sendSocketMessage({
+      type: "step_result",
+      dispatchId: message.dispatchId,
+      ok: false,
+      error: error.message || "Unhandled dispatch error."
+    });
+  } finally {
+    activeDispatchId = null;
+  }
+}
+
+async function handleSocketMessage(rawMessage) {
+  let message;
+  try {
+    message = JSON.parse(rawMessage);
+  } catch (error) {
+    log("Received invalid WebSocket JSON.");
+    return;
+  }
+
+  if (!message || typeof message.type !== "string") {
+    return;
+  }
+
+  if (message.type === "welcome" || message.type === "registered" || message.type === "state_update") {
+    return;
+  }
+
+  if (message.type === "heartbeat") {
+    sendSocketMessage({
+      type: "heartbeat_ack",
+      now: Date.now()
+    });
+    return;
+  }
+
+  if (message.type === "dispatch_step") {
+    await handleDispatchStep(message);
+    return;
+  }
+
+  if (message.type === "error") {
+    log(`Server error: ${message.error}`);
+  }
+}
+
+function connectSocket() {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  socket = new WebSocket(SERVER_WS_URL);
+
+  socket.addEventListener("open", () => {
+    socketConnected = true;
+    log("WebSocket connected.");
+    sendRegistration().catch((error) => {
+      log(`Registration failed: ${error.message}`);
+    });
+  });
+
+  socket.addEventListener("message", (event) => {
+    handleSocketMessage(event.data).catch((error) => {
+      log(`WebSocket message handling failed: ${error.message}`);
+    });
+  });
+
+  socket.addEventListener("close", () => {
+    socketConnected = false;
+    socket = null;
+    log("WebSocket disconnected. Reconnecting...");
+    scheduleReconnect();
+  });
+
+  socket.addEventListener("error", (event) => {
+    const message = event && event.message ? event.message : "Unknown WebSocket error.";
+    log(message);
+  });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
   log("Extension installed.");
   injectIntoExistingSupportedTabs().catch((error) => {
-    log("Initial auto-injection failed:", error.message);
+    log(`Initial auto-injection failed: ${error.message}`);
   });
+  connectSocket();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   log("Browser startup detected.");
   injectIntoExistingSupportedTabs().catch((error) => {
-    log("Startup auto-injection failed:", error.message);
+    log(`Startup auto-injection failed: ${error.message}`);
   });
+  connectSocket();
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -183,18 +348,38 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   });
 });
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+
+  if (!changes.profileIdentity && !changes.siteMode) {
+    return;
+  }
+
+  connectSocket();
+  sendRegistration().catch((error) => {
+    log(`Registration refresh failed: ${error.message}`);
+  });
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "AUTOCHAT_ENSURE_INJECTION") {
     ensureContentScriptInjected()
-      .then((result) => sendResponse(result))
+      .then((result) => {
+        connectSocket();
+        sendRegistration().catch(() => {});
+        sendResponse(result);
+      })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
   }
 
-  if (message && message.type === "AUTOCHAT_POST_STEP_COMPLETE") {
-    postStepComplete(message.stepIndex, message.profile)
-      .then((state) => sendResponse({ ok: true, state }))
+  if (message && message.type === "AUTOCHAT_RUN_DISPATCH_NOW") {
+    connectSocket();
+    sendRegistration()
+      .then(() => sendResponse({ ok: true, connected: socketConnected }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
@@ -210,3 +395,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
+
+connectSocket();
