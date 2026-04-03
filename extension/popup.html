@@ -3,12 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AutoChat MVP</title>
+    <title>AutoChat</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="popup">
-      <h1>AutoChat MVP</h1>
+      <h1>AutoChat</h1>
 
       <section class="panel">
         <label for="profileIdentity">Profile identity</label>
@@ -16,16 +16,11 @@
           <option value="A">A</option>
           <option value="B">B</option>
         </select>
-
-        <label for="siteMode">Mode</label>
-        <select id="siteMode">
-          <option value="test">Test page</option>
-          <option value="live" selected>Real site (Messenger)</option>
-        </select>
+        <p class="hint">Messenger only. Live sends use Chrome debugger, so Chrome may show a debugging banner while messages are being sent.</p>
       </section>
 
       <section class="panel button-grid">
-        <button id="loadSampleButton">Load sample script</button>
+        <button id="loadSampleButton">Load default script</button>
         <button id="startButton">Start</button>
         <button id="stopButton">Stop</button>
         <button id="resetButton">Reset</button>
@@ -51,6 +46,14 @@
         <div class="status-row">
           <span>Next text</span>
           <strong id="nextTextStatus">-</strong>
+        </div>
+        <div class="status-row">
+          <span>Worker A</span>
+          <strong id="workerAStatus">-</strong>
+        </div>
+        <div class="status-row">
+          <span>Worker B</span>
+          <strong id="workerBStatus">-</strong>
         </div>
       </section>
 

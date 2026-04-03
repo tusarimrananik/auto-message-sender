@@ -1,7 +1,7 @@
 {
-  "name": "autochat-mvp",
-  "version": "1.0.0",
-  "description": "Local MVP for scripted two-profile web chat automation.",
+  "name": "autochat",
+  "version": "2.0.0",
+  "description": "Production Messenger automation with WebSocket orchestration and Chrome debugger input.",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js"
@@ -9,8 +9,9 @@
   "keywords": [
     "chrome-extension",
     "express",
-    "polling",
-    "automation"
+    "messenger",
+    "automation",
+    "websocket"
   ],
   "author": "",
   "license": "MIT",

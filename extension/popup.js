@@ -2,7 +2,6 @@ const SERVER_BASE_URL = "http://localhost:3000";
 const LOG_PREFIX = "[AUTOCHAT]";
 
 const profileSelect = document.getElementById("profileIdentity");
-const modeSelect = document.getElementById("siteMode");
 const loadSampleButton = document.getElementById("loadSampleButton");
 const startButton = document.getElementById("startButton");
 const stopButton = document.getElementById("stopButton");
@@ -13,6 +12,8 @@ const runningStatus = document.getElementById("runningStatus");
 const currentStepStatus = document.getElementById("currentStepStatus");
 const nextSenderStatus = document.getElementById("nextSenderStatus");
 const nextTextStatus = document.getElementById("nextTextStatus");
+const workerAStatus = document.getElementById("workerAStatus");
+const workerBStatus = document.getElementById("workerBStatus");
 const messageText = document.getElementById("messageText");
 
 function log(...args) {
@@ -26,15 +27,13 @@ function setMessage(text, isError = false) {
 
 async function getStoredSettings() {
   return chrome.storage.local.get({
-    profileIdentity: "A",
-    siteMode: "live"
+    profileIdentity: "A"
   });
 }
 
 async function saveStoredSettings() {
   await chrome.storage.local.set({
-    profileIdentity: profileSelect.value,
-    siteMode: modeSelect.value
+    profileIdentity: profileSelect.value
   });
 }
 
@@ -56,8 +55,8 @@ async function callServer(path, options = {}) {
   return data;
 }
 
-async function ensurePageInjection() {
-  return chrome.runtime.sendMessage({ type: "AUTOCHAT_ENSURE_INJECTION" });
+async function ensureMessengerReady() {
+  return chrome.runtime.sendMessage({ type: "AUTOCHAT_ENSURE_READY" });
 }
 
 async function triggerDispatchNow() {
@@ -70,6 +69,8 @@ function renderState(state) {
   currentStepStatus.textContent = `${state.currentStep} / ${state.totalSteps}`;
   nextSenderStatus.textContent = state.nextStep ? state.nextStep.sender : "None";
   nextTextStatus.textContent = state.nextStep ? state.nextStep.text : "Finished";
+  workerAStatus.textContent = state.workers && state.workers.A && state.workers.A.connected ? "Online" : "Offline";
+  workerBStatus.textContent = state.workers && state.workers.B && state.workers.B.connected ? "Online" : "Offline";
 }
 
 async function refreshState() {
@@ -82,6 +83,8 @@ async function refreshState() {
     currentStepStatus.textContent = "-";
     nextSenderStatus.textContent = "-";
     nextTextStatus.textContent = "-";
+    workerAStatus.textContent = "-";
+    workerBStatus.textContent = "-";
     setMessage(error.message, true);
   }
 }
@@ -89,7 +92,6 @@ async function refreshState() {
 async function initializePopup() {
   const settings = await getStoredSettings();
   profileSelect.value = settings.profileIdentity;
-  modeSelect.value = settings.siteMode;
 
   await refreshState();
   setInterval(refreshState, 2000);
@@ -101,19 +103,13 @@ profileSelect.addEventListener("change", async () => {
   setMessage(`Saved profile identity: ${profileSelect.value}`);
 });
 
-modeSelect.addEventListener("change", async () => {
-  await saveStoredSettings();
-  await triggerDispatchNow();
-  setMessage(`Saved mode: ${modeSelect.value}`);
-});
-
 loadSampleButton.addEventListener("click", async () => {
   try {
     await saveStoredSettings();
     await callServer("/script/load", { method: "POST", body: {} });
     await triggerDispatchNow();
     await refreshState();
-    setMessage("Sample script loaded.");
+    setMessage("Default script loaded.");
   } catch (error) {
     setMessage(error.message, true);
   }
@@ -122,15 +118,15 @@ loadSampleButton.addEventListener("click", async () => {
 startButton.addEventListener("click", async () => {
   try {
     await saveStoredSettings();
-    const injectionResult = await ensurePageInjection();
-    if (!injectionResult || !injectionResult.ok) {
-      throw new Error(injectionResult && injectionResult.error ? injectionResult.error : "Could not inject into the current chat tab.");
+    const readyResult = await ensureMessengerReady();
+    if (!readyResult || !readyResult.ok) {
+      throw new Error(readyResult && readyResult.error ? readyResult.error : "Could not find a ready Messenger tab.");
     }
 
     await callServer("/run/start", { method: "POST", body: {} });
     await triggerDispatchNow();
     await refreshState();
-    setMessage("Automation started and page injection checked.");
+    setMessage("Automation started.");
   } catch (error) {
     setMessage(error.message, true);
   }

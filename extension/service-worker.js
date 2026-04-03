@@ -2,9 +2,6 @@ const SERVER_BASE_URL = "http://localhost:3000";
 const SERVER_WS_URL = "ws://localhost:3000/ws";
 const LOG_PREFIX = "[AUTOCHAT]";
 const SOCKET_RECONNECT_DELAY_MS = 2000;
-const CONTENT_SCRIPT_VERSION = "ws-redesign-v3";
-const PING_MESSAGE_TYPE = "AUTOCHAT_PING_V3";
-const SEND_STEP_MESSAGE_TYPE = "AUTOCHAT_SEND_STEP_V3";
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
 const LIVE_INPUT_SELECTORS = [
   'div[contenteditable="true"][data-lexical-editor="true"]',
@@ -17,18 +14,13 @@ const LIVE_INPUT_SELECTORS = [
 
 let socket = null;
 let reconnectTimerId = null;
-let socketConnected = false;
 let activeDispatchId = null;
 
 function log(...args) {
   console.log(LOG_PREFIX, ...args);
 }
 
-function isSupportedAutohchatUrl(urlString) {
-  return isMatchingChatUrl(urlString, "live") || isMatchingChatUrl(urlString, "test");
-}
-
-function isMatchingChatUrl(urlString, siteMode) {
+function isMessengerUrl(urlString) {
   if (typeof urlString !== "string" || !urlString) {
     return false;
   }
@@ -37,14 +29,6 @@ function isMatchingChatUrl(urlString, siteMode) {
     const url = new URL(urlString);
     const hostname = url.hostname.toLowerCase();
     const pathname = url.pathname.toLowerCase();
-
-    if (siteMode === "test") {
-      return (
-        (hostname === "localhost" || hostname === "127.0.0.1") &&
-        pathname.startsWith("/test-chat.html")
-      );
-    }
-
     const isMessengerHost =
       hostname === "messenger.com" || hostname.endsWith(".messenger.com");
     const isFacebookHost =
@@ -59,88 +43,8 @@ function isMatchingChatUrl(urlString, siteMode) {
 
 async function getStoredSettings() {
   return chrome.storage.local.get({
-    profileIdentity: "A",
-    siteMode: "live"
+    profileIdentity: "A"
   });
-}
-
-async function pingTab(tabId) {
-  return chrome.tabs.sendMessage(tabId, { type: PING_MESSAGE_TYPE });
-}
-
-async function injectScriptsIntoTab(tab) {
-  if (!tab || !tab.id || !isSupportedAutohchatUrl(tab.url)) {
-    return false;
-  }
-
-  try {
-    const pingResult = await pingTab(tab.id);
-    if (pingResult && pingResult.ok && pingResult.version === CONTENT_SCRIPT_VERSION) {
-      log(`Content script already available in tab ${tab.id}.`);
-    } else {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["content.js"]
-      });
-    }
-  } catch (error) {
-    log(`Injecting content script into tab ${tab.id}.`);
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["content.js"]
-    });
-  }
-
-  if (isMatchingChatUrl(tab.url, "live")) {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["page-bridge.js"],
-      world: "MAIN"
-    });
-  }
-
-  return true;
-}
-
-async function injectIntoExistingSupportedTabs() {
-  const tabs = await chrome.tabs.query({});
-  const matchingTabs = tabs.filter((tab) => tab.id && isSupportedAutohchatUrl(tab.url));
-
-  for (const tab of matchingTabs) {
-    try {
-      await injectScriptsIntoTab(tab);
-    } catch (error) {
-      log(`Auto-injection failed in tab ${tab.id}: ${error.message}`);
-    }
-  }
-}
-
-async function ensureContentScriptInjected() {
-  const settings = await getStoredSettings();
-  const tabs = await chrome.tabs.query({});
-
-  const matchingTabs = tabs.filter(
-    (tab) => tab.id && isMatchingChatUrl(tab.url, settings.siteMode)
-  );
-
-  if (matchingTabs.length === 0) {
-    const visibleUrls = tabs
-      .map((tab) => tab.url)
-      .filter((url) => typeof url === "string" && url.startsWith("http"))
-      .slice(0, 5);
-
-    throw new Error(
-      `No open ${settings.siteMode} chat tab matched the expected URL pattern. ` +
-      `Open Messenger or facebook.com/messages in this Chrome profile. ` +
-      `Seen tabs: ${visibleUrls.join(" | ")}`
-    );
-  }
-
-  for (const tab of matchingTabs) {
-    await injectScriptsIntoTab(tab);
-  }
-
-  return { ok: true, tabCount: matchingTabs.length };
 }
 
 async function fetchServerState() {
@@ -152,6 +56,69 @@ async function fetchServerState() {
   }
 
   return data.state;
+}
+
+async function findMessengerTabs() {
+  const tabs = await chrome.tabs.query({});
+  return tabs.filter((tab) => tab.id && isMessengerUrl(tab.url));
+}
+
+async function ensureMessengerTabAvailable() {
+  const matchingTabs = await findMessengerTabs();
+  if (matchingTabs.length === 0) {
+    throw new Error(
+      "No open Messenger tab matched the expected URL pattern. " +
+      "Open messenger.com or facebook.com/messages in this Chrome profile."
+    );
+  }
+
+  return { ok: true, tabCount: matchingTabs.length };
+}
+
+async function findDispatchTab() {
+  const matchingTabs = await findMessengerTabs();
+  if (matchingTabs.length === 0) {
+    return null;
+  }
+
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (activeTab && activeTab.id && isMessengerUrl(activeTab.url)) {
+    return activeTab;
+  }
+
+  return matchingTabs[0];
+}
+
+function scheduleReconnect(delayMs = SOCKET_RECONNECT_DELAY_MS) {
+  if (reconnectTimerId !== null) {
+    clearTimeout(reconnectTimerId);
+  }
+
+  reconnectTimerId = setTimeout(() => {
+    reconnectTimerId = null;
+    connectSocket();
+  }, delayMs);
+}
+
+function sendSocketMessage(payload) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  socket.send(JSON.stringify(payload));
+  return true;
+}
+
+async function sendRegistration() {
+  const settings = await getStoredSettings();
+  const sent = sendSocketMessage({
+    type: "register_worker",
+    profile: settings.profileIdentity
+  });
+
+  if (!sent) {
+    throw new Error("WebSocket is not connected.");
+  }
 }
 
 function getDebuggerTarget(tabId) {
@@ -172,7 +139,7 @@ async function detachDebugger(tabId) {
   try {
     await chrome.debugger.detach(getDebuggerTarget(tabId));
   } catch (_) {
-    // Ignore detach failures so send cleanup does not mask the real issue.
+    // Ignore cleanup errors.
   }
 }
 
@@ -326,59 +293,6 @@ async function sendLiveStepViaDebugger(tab, message) {
   }
 }
 
-function scheduleReconnect(delayMs = SOCKET_RECONNECT_DELAY_MS) {
-  if (reconnectTimerId !== null) {
-    clearTimeout(reconnectTimerId);
-  }
-
-  reconnectTimerId = setTimeout(() => {
-    reconnectTimerId = null;
-    connectSocket();
-  }, delayMs);
-}
-
-function sendSocketMessage(payload) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return false;
-  }
-
-  socket.send(JSON.stringify(payload));
-  return true;
-}
-
-async function sendRegistration() {
-  const settings = await getStoredSettings();
-
-  sendSocketMessage({
-    type: "register_worker",
-    profile: settings.profileIdentity,
-    siteMode: settings.siteMode
-  });
-}
-
-async function findDispatchTab(siteMode) {
-  const tabs = await chrome.tabs.query({});
-  const matchingTabs = tabs.filter((tab) => tab.id && isMatchingChatUrl(tab.url, siteMode));
-
-  if (matchingTabs.length === 0) {
-    return null;
-  }
-
-  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (activeTab && activeTab.id && isMatchingChatUrl(activeTab.url, siteMode)) {
-    return activeTab;
-  }
-
-  return matchingTabs[0];
-}
-
-async function sendStepToTab(tabId, payload) {
-  return chrome.tabs.sendMessage(tabId, {
-    type: SEND_STEP_MESSAGE_TYPE,
-    ...payload
-  });
-}
-
 async function handleDispatchStep(message) {
   if (activeDispatchId !== null) {
     sendSocketMessage({
@@ -400,26 +314,15 @@ async function handleDispatchStep(message) {
       );
     }
 
-    const targetTab = await findDispatchTab(settings.siteMode);
+    const targetTab = await findDispatchTab();
     if (!targetTab || !targetTab.id) {
-      throw new Error(`No ${settings.siteMode} tab available for profile ${settings.profileIdentity}.`);
+      throw new Error(`No Messenger tab available for profile ${settings.profileIdentity}.`);
     }
 
-    let result;
-    if (settings.siteMode === "live") {
-      result = await sendLiveStepViaDebugger(targetTab, {
-        text: message.text,
-        delayMs: message.delayMs || 0
-      });
-    } else {
-      await injectScriptsIntoTab(targetTab);
-      result = await sendStepToTab(targetTab.id, {
-        text: message.text,
-        sender: message.sender,
-        stepIndex: message.stepIndex,
-        delayMs: message.delayMs || 0
-      });
-    }
+    const result = await sendLiveStepViaDebugger(targetTab, {
+      text: message.text,
+      delayMs: message.delayMs || 0
+    });
 
     sendSocketMessage({
       type: "step_result",
@@ -483,7 +386,6 @@ function connectSocket() {
   socket = new WebSocket(SERVER_WS_URL);
 
   socket.addEventListener("open", () => {
-    socketConnected = true;
     log("WebSocket connected.");
     sendRegistration().catch((error) => {
       log(`Registration failed: ${error.message}`);
@@ -497,7 +399,6 @@ function connectSocket() {
   });
 
   socket.addEventListener("close", () => {
-    socketConnected = false;
     socket = null;
     log("WebSocket disconnected. Reconnecting...");
     scheduleReconnect();
@@ -511,40 +412,16 @@ function connectSocket() {
 
 chrome.runtime.onInstalled.addListener(() => {
   log("Extension installed.");
-  injectIntoExistingSupportedTabs().catch((error) => {
-    log(`Initial auto-injection failed: ${error.message}`);
-  });
   connectSocket();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   log("Browser startup detected.");
-  injectIntoExistingSupportedTabs().catch((error) => {
-    log(`Startup auto-injection failed: ${error.message}`);
-  });
   connectSocket();
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== "complete" || !tab || !tab.id) {
-    return;
-  }
-
-  if (!isSupportedAutohchatUrl(tab.url)) {
-    return;
-  }
-
-  injectScriptsIntoTab(tab).catch((error) => {
-    log(`Tab update auto-injection failed in tab ${tabId}: ${error.message}`);
-  });
-});
-
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local") {
-    return;
-  }
-
-  if (!changes.profileIdentity && !changes.siteMode) {
+  if (areaName !== "local" || !changes.profileIdentity) {
     return;
   }
 
@@ -555,13 +432,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message && message.type === "AUTOCHAT_ENSURE_INJECTION") {
-    ensureContentScriptInjected()
+  if (message && message.type === "AUTOCHAT_ENSURE_READY") {
+    ensureMessengerTabAvailable()
       .then((result) => {
         connectSocket();
-        sendRegistration().catch(() => {});
-        sendResponse(result);
+        return sendRegistration().then(() => result);
       })
+      .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
@@ -570,7 +447,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "AUTOCHAT_RUN_DISPATCH_NOW") {
     connectSocket();
     sendRegistration()
-      .then(() => sendResponse({ ok: true, connected: socketConnected }))
+      .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
@@ -587,7 +464,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-injectIntoExistingSupportedTabs().catch((error) => {
-  log(`Boot auto-injection failed: ${error.message}`);
-});
 connectSocket();

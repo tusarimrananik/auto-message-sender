@@ -1,7 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
-const path = require("path");
 const { WebSocketServer, WebSocket } = require("ws");
 
 const app = express();
@@ -45,14 +44,9 @@ let dispatchRetryTimeoutId = null;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "..", "public")));
 
 function isValidProfile(profile) {
   return profile === "A" || profile === "B";
-}
-
-function isValidSiteMode(siteMode) {
-  return siteMode === "test" || siteMode === "live";
 }
 
 function isValidScriptStep(step) {
@@ -76,7 +70,6 @@ function getProfileWorkerSummary(profile) {
   return {
     connected: connectedWorkers.length > 0,
     connectionCount: connectedWorkers.length,
-    siteMode: preferredWorker ? preferredWorker.siteMode : null,
     lastSeenAt: preferredWorker ? preferredWorker.lastSeenAt : null
   };
 }
@@ -94,12 +87,11 @@ function buildStateResponse() {
     totalSteps: state.script.length,
     finished: state.currentStep >= state.script.length,
     activeDispatch: state.activeDispatch
-      ? {
+        ? {
           dispatchId: state.activeDispatch.dispatchId,
           stepIndex: state.activeDispatch.stepIndex,
           profile: state.activeDispatch.profile,
           socketId: state.activeDispatch.socketId,
-          siteMode: state.activeDispatch.siteMode,
           createdAt: state.activeDispatch.createdAt
         }
       : null,
@@ -217,7 +209,6 @@ function dispatchNextStep(reason = "unknown") {
     stepIndex: state.currentStep,
     profile: current.sender,
     socketId: worker.socketId,
-    siteMode: worker.siteMode,
     createdAt: Date.now(),
     timeoutId: null
   };
@@ -237,8 +228,7 @@ function dispatchNextStep(reason = "unknown") {
     stepIndex: dispatch.stepIndex,
     sender: current.sender,
     text: current.text,
-    delayMs: state.delayMs[current.sender] || 0,
-    siteMode: worker.siteMode
+    delayMs: state.delayMs[current.sender] || 0
   });
 
   if (!sent) {
@@ -259,13 +249,7 @@ function handleWorkerRegistration(worker, message) {
     return;
   }
 
-  if (!isValidSiteMode(message.siteMode)) {
-    sendJson(worker, { type: "error", error: 'Invalid "siteMode". Use "test" or "live".' });
-    return;
-  }
-
   worker.profile = message.profile;
-  worker.siteMode = message.siteMode;
   updateWorkerSeen(worker);
 
   sendJson(worker, {
@@ -275,7 +259,7 @@ function handleWorkerRegistration(worker, message) {
   });
 
   console.log(
-    `[AUTOCHAT] Worker ${worker.socketId} registered as profile ${worker.profile} in ${worker.siteMode} mode.`
+    `[AUTOCHAT] Worker ${worker.socketId} registered as profile ${worker.profile}.`
   );
 
   broadcastState();
@@ -462,7 +446,6 @@ wss.on("connection", (ws) => {
     socketId: state.nextSocketId,
     ws,
     profile: null,
-    siteMode: "live",
     connectedAt: Date.now(),
     lastSeenAt: Date.now()
   };
@@ -532,5 +515,4 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log(`[AUTOCHAT] Server running at http://localhost:${PORT}`);
   console.log(`[AUTOCHAT] WebSocket endpoint available at ws://localhost:${PORT}${SOCKET_PATH}`);
-  console.log(`[AUTOCHAT] Test page available at http://localhost:${PORT}/test-chat.html`);
 });

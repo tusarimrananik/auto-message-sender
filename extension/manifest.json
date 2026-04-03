@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "AutoChat MVP",
-  "version": "1.0.0",
-  "description": "Local scripted two-profile chat automation MVP.",
+  "name": "AutoChat",
+  "version": "2.0.0",
+  "description": "Production Messenger automation with WebSocket orchestration and Chrome debugger input.",
   "permissions": [
     "debugger",
     "storage",
-    "tabs",
-    "scripting"
+    "tabs"
   ],
   "host_permissions": [
     "http://localhost:3000/*",
@@ -24,23 +23,7 @@
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:3000 ws://localhost:3000 http://127.0.0.1:3000 ws://127.0.0.1:3000"
   },
   "action": {
-    "default_title": "AutoChat MVP",
+    "default_title": "AutoChat",
     "default_popup": "popup.html"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "http://localhost:3000/test-chat.html*",
-        "http://127.0.0.1:3000/test-chat.html*",
-        "https://*.messenger.com/*",
-        "https://messenger.com/*",
-        "https://*.facebook.com/*",
-        "https://facebook.com/*"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }
