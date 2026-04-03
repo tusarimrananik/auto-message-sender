@@ -6,7 +6,7 @@ body {
 }
 
 .popup {
-  width: 320px;
+  width: 360px;
   padding: 14px;
   box-sizing: border-box;
 }
@@ -27,7 +27,9 @@ h1 {
 label {
   display: block;
   font-size: 12px;
+  font-weight: 600;
   margin-bottom: 6px;
+  color: #374151;
 }
 
 select,
@@ -45,10 +47,21 @@ button {
   background: #111827;
   color: white;
   cursor: pointer;
+  font-weight: 500;
 }
 
 button:hover {
   background: #1f2937;
+}
+
+button.secondary {
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #9ca3af;
+}
+
+button.secondary:hover {
+  background: #f3f4f6;
 }
 
 .button-grid button:last-child,
@@ -56,6 +69,49 @@ select:last-child {
   margin-bottom: 0;
 }
 
+/* Script editor */
+.script-editor-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 140px;
+  max-height: 300px;
+  padding: 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  color: #111827;
+  background: #f9fafb;
+  margin-bottom: 8px;
+}
+
+.script-editor-panel textarea:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  background: #ffffff;
+}
+
+.script-editor-panel textarea::placeholder {
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.editor-actions button {
+  flex: 1;
+  margin-bottom: 0;
+  font-size: 13px;
+  padding: 7px 8px;
+}
+
+/* Status panel */
 .status-row {
   display: flex;
   justify-content: space-between;
@@ -76,8 +132,16 @@ select:last-child {
 }
 
 .hint {
-  margin: 10px 0 0;
-  font-size: 12px;
+  margin: 8px 0 0;
+  font-size: 11px;
   line-height: 1.4;
   color: #4b5563;
+}
+
+.hint.success {
+  color: #059669;
+}
+
+.hint.error {
+  color: #dc2626;
 }

@@ -19,11 +19,20 @@
         <p class="hint">Messenger only. Live sends use Chrome debugger, so Chrome may show a debugging banner while messages are being sent.</p>
       </section>
 
+      <section class="panel script-editor-panel">
+        <label for="scriptEditor">Chat Script</label>
+        <textarea id="scriptEditor" placeholder='Paste your chat script as JSON:&#10;&#10;[&#10;  { "sender": "A", "text": "Hello" },&#10;  { "sender": "B", "text": "Hi there!" }&#10;]'></textarea>
+        <div class="editor-actions">
+          <button id="loadPastedButton">Load Pasted Script</button>
+          <button id="loadSampleButton" class="secondary">Load Default Script</button>
+        </div>
+        <p class="hint" id="scriptHint"></p>
+      </section>
+
       <section class="panel button-grid">
-        <button id="loadSampleButton">Load default script</button>
-        <button id="startButton">Start</button>
-        <button id="stopButton">Stop</button>
-        <button id="resetButton">Reset</button>
+        <button id="startButton">▶ Start</button>
+        <button id="stopButton">⏹ Stop</button>
+        <button id="resetButton" class="secondary">↺ Reset</button>
       </section>
 
       <section class="panel status-panel">
