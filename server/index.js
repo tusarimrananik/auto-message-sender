@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const { WebSocketServer, WebSocket } = require("ws");
 
 const app = express();
@@ -9,13 +11,32 @@ const SOCKET_PATH = "/ws";
 const DISPATCH_TIMEOUT_MS = 45000;
 const RETRY_DELAY_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15000;
+const SCRIPTS_DIR = path.join(__dirname, "scripts");
 
-const DEFAULT_SAMPLE_SCRIPT = [
-  { sender: "A", text: "Hi" },
-  { sender: "B", text: "Hello" },
-  { sender: "B", text: "How are you?" },
-  { sender: "A", text: "Good" }
-];
+function loadScriptFile(name = "default") {
+  const safeName = path.basename(name, ".json");
+  const filePath = path.join(SCRIPTS_DIR, `${safeName}.json`);
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Script file "${safeName}.json" not found in scripts directory.`);
+  }
+
+  const raw = fs.readFileSync(filePath, "utf-8");
+  return JSON.parse(raw);
+}
+
+function listScriptFiles() {
+  if (!fs.existsSync(SCRIPTS_DIR)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(SCRIPTS_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => f.replace(/\.json$/, ""));
+}
+
+const DEFAULT_SAMPLE_SCRIPT = loadScriptFile("default");
 
 function cloneScript(script) {
   return script.map((step) => ({
@@ -358,11 +379,29 @@ app.post("/config/profile-delay", (req, res) => {
   });
 });
 
+app.get("/scripts", (req, res) => {
+  try {
+    const files = listScriptFiles();
+    res.json({ ok: true, scripts: files });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post("/script/load", (req, res) => {
-  const incomingScript = req.body && req.body.script;
-  const scriptToLoad = Array.isArray(incomingScript)
-    ? incomingScript
-    : DEFAULT_SAMPLE_SCRIPT;
+  let scriptToLoad;
+
+  if (req.body && req.body.file) {
+    try {
+      scriptToLoad = loadScriptFile(req.body.file);
+    } catch (error) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
+  } else if (req.body && Array.isArray(req.body.script)) {
+    scriptToLoad = req.body.script;
+  } else {
+    scriptToLoad = loadScriptFile("default");
+  }
 
   if (!Array.isArray(scriptToLoad) || scriptToLoad.length === 0) {
     return res.status(400).json({
