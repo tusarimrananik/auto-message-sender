@@ -1,11 +1,13 @@
 (function () {
-  if (window.AUTOCHAT_PAGE_BRIDGE_READY) {
+  const PAGE_BRIDGE_VERSION = "ws-redesign-v3";
+  if (window.AUTOCHAT_PAGE_BRIDGE_VERSION === PAGE_BRIDGE_VERSION) {
     return;
   }
 
-  const SEND_EVENT = "AUTOCHAT_PAGE_BRIDGE_SEND";
-  const RESULT_EVENT = "AUTOCHAT_PAGE_BRIDGE_RESULT";
+  const SEND_EVENT = "AUTOCHAT_PAGE_BRIDGE_SEND_V3";
+  const RESULT_EVENT = "AUTOCHAT_PAGE_BRIDGE_RESULT_V3";
 
+  window.AUTOCHAT_PAGE_BRIDGE_VERSION = PAGE_BRIDGE_VERSION;
   window.AUTOCHAT_PAGE_BRIDGE_READY = true;
   document.documentElement.dataset.autochatBridgeReady = "true";
 
@@ -34,26 +36,29 @@
     selection.addRange(range);
   }
 
+  function readEditorText(input) {
+    return (input.textContent || "").replace(/\u200b/g, "").trim();
+  }
+
   function replaceEditorText(input, text) {
     try {
       input.focus();
       document.execCommand("selectAll");
       document.execCommand("delete");
 
-      const inserted = document.execCommand("insertText", false, text);
-      if (inserted && input.textContent.includes(text)) {
-        return true;
-      }
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("text/plain", text);
 
-      input.innerHTML = "";
-      const paragraph = document.createElement("p");
-      paragraph.setAttribute("dir", "auto");
-      paragraph.textContent = text;
-      input.appendChild(paragraph);
-      placeCaretAtEnd(paragraph);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dataTransfer
+        })
+      );
 
-      return input.textContent.includes(text);
+      placeCaretAtEnd(input);
+      return true;
     } catch (error) {
       return false;
     }
@@ -88,16 +93,25 @@
         return;
       }
 
-      const inserted = replaceEditorText(input, text);
-      if (!inserted) {
-        emitResult({ ok: false, error: "Could not insert text into Messenger input." });
-        return;
-      }
-
       setTimeout(() => {
+        const inserted = replaceEditorText(input, text);
+        if (!inserted) {
+          emitResult({ ok: false, error: "Could not paste text into Messenger input." });
+          return;
+        }
+
+        const actualText = readEditorText(input);
+        if (actualText !== text.trim()) {
+          emitResult({
+            ok: false,
+            error: `Messenger editor text mismatch after paste. Saw "${actualText}".`
+          });
+          return;
+        }
+
         pressEnter(input);
         emitResult({ ok: true });
-      }, 250);
+      }, 150);
     } catch (error) {
       emitResult({ ok: false, error: error.message || "Unknown page bridge error." });
     }

@@ -2,6 +2,18 @@ const SERVER_BASE_URL = "http://localhost:3000";
 const SERVER_WS_URL = "ws://localhost:3000/ws";
 const LOG_PREFIX = "[AUTOCHAT]";
 const SOCKET_RECONNECT_DELAY_MS = 2000;
+const CONTENT_SCRIPT_VERSION = "ws-redesign-v3";
+const PING_MESSAGE_TYPE = "AUTOCHAT_PING_V3";
+const SEND_STEP_MESSAGE_TYPE = "AUTOCHAT_SEND_STEP_V3";
+const DEBUGGER_PROTOCOL_VERSION = "1.3";
+const LIVE_INPUT_SELECTORS = [
+  'div[contenteditable="true"][data-lexical-editor="true"]',
+  'div[role="textbox"][contenteditable="true"][aria-label="Message"]',
+  'div[role="textbox"][contenteditable="true"][aria-placeholder="Aa"]',
+  'div[role="textbox"][contenteditable="true"]',
+  'div[aria-label="Message"][contenteditable="true"]',
+  'div[contenteditable="true"]'
+];
 
 let socket = null;
 let reconnectTimerId = null;
@@ -53,7 +65,7 @@ async function getStoredSettings() {
 }
 
 async function pingTab(tabId) {
-  return chrome.tabs.sendMessage(tabId, { type: "AUTOCHAT_PING" });
+  return chrome.tabs.sendMessage(tabId, { type: PING_MESSAGE_TYPE });
 }
 
 async function injectScriptsIntoTab(tab) {
@@ -63,7 +75,7 @@ async function injectScriptsIntoTab(tab) {
 
   try {
     const pingResult = await pingTab(tab.id);
-    if (pingResult && pingResult.ok) {
+    if (pingResult && pingResult.ok && pingResult.version === CONTENT_SCRIPT_VERSION) {
       log(`Content script already available in tab ${tab.id}.`);
     } else {
       await chrome.scripting.executeScript({
@@ -142,6 +154,178 @@ async function fetchServerState() {
   return data.state;
 }
 
+function getDebuggerTarget(tabId) {
+  return { tabId };
+}
+
+async function attachDebugger(tabId) {
+  try {
+    await chrome.debugger.attach(getDebuggerTarget(tabId), DEBUGGER_PROTOCOL_VERSION);
+  } catch (error) {
+    if (!error.message || !error.message.includes("Another debugger is already attached")) {
+      throw error;
+    }
+  }
+}
+
+async function detachDebugger(tabId) {
+  try {
+    await chrome.debugger.detach(getDebuggerTarget(tabId));
+  } catch (_) {
+    // Ignore detach failures so send cleanup does not mask the real issue.
+  }
+}
+
+async function sendDebuggerCommand(tabId, method, params = {}) {
+  return chrome.debugger.sendCommand(getDebuggerTarget(tabId), method, params);
+}
+
+function buildLiveInputLookupExpression() {
+  return `(() => {
+    const selectors = ${JSON.stringify(LIVE_INPUT_SELECTORS)};
+    for (const selector of selectors) {
+      try {
+        const el = document.querySelector(selector);
+        if (!el) continue;
+        el.focus();
+        return {
+          ok: true,
+          selector,
+          text: (el.textContent || "").replace(/\\u200b/g, "").trim()
+        };
+      } catch (_) {}
+    }
+    return { ok: false, error: "Messenger input not found." };
+  })()`;
+}
+
+async function evaluateInTab(tabId, expression) {
+  const result = await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: false
+  });
+
+  return result && result.result ? result.result.value : null;
+}
+
+async function focusLiveInput(tabId) {
+  const result = await evaluateInTab(tabId, buildLiveInputLookupExpression());
+  if (!result || !result.ok) {
+    throw new Error(result && result.error ? result.error : "Messenger input not found.");
+  }
+
+  return result;
+}
+
+async function clearFocusedInput(tabId) {
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Control",
+    code: "ControlLeft",
+    windowsVirtualKeyCode: 17,
+    nativeVirtualKeyCode: 17,
+    modifiers: 2
+  });
+
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "a",
+    code: "KeyA",
+    text: "a",
+    unmodifiedText: "a",
+    windowsVirtualKeyCode: 65,
+    nativeVirtualKeyCode: 65,
+    modifiers: 2
+  });
+
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "a",
+    code: "KeyA",
+    windowsVirtualKeyCode: 65,
+    nativeVirtualKeyCode: 65,
+    modifiers: 2
+  });
+
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Control",
+    code: "ControlLeft",
+    windowsVirtualKeyCode: 17,
+    nativeVirtualKeyCode: 17
+  });
+
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+    nativeVirtualKeyCode: 8
+  });
+
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Backspace",
+    code: "Backspace",
+    windowsVirtualKeyCode: 8,
+    nativeVirtualKeyCode: 8
+  });
+}
+
+async function pressEnterViaDebugger(tabId) {
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+    text: "\r",
+    unmodifiedText: "\r"
+  });
+
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13
+  });
+}
+
+async function verifyLiveInputText(tabId) {
+  const result = await evaluateInTab(tabId, buildLiveInputLookupExpression());
+  return result && result.ok ? result.text : null;
+}
+
+async function sendLiveStepViaDebugger(tab, message) {
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await chrome.tabs.update(tab.id, { active: true });
+  await attachDebugger(tab.id);
+
+  try {
+    await focusLiveInput(tab.id);
+
+    if (message.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, message.delayMs));
+      await focusLiveInput(tab.id);
+    }
+
+    await clearFocusedInput(tab.id);
+    await sendDebuggerCommand(tab.id, "Input.insertText", { text: message.text });
+
+    const insertedText = await verifyLiveInputText(tab.id);
+    if (insertedText !== message.text.trim()) {
+      throw new Error(`Live input mismatch after debugger insert. Saw "${insertedText || ""}".`);
+    }
+
+    await pressEnterViaDebugger(tab.id);
+    return { ok: true };
+  } finally {
+    await detachDebugger(tab.id);
+  }
+}
+
 function scheduleReconnect(delayMs = SOCKET_RECONNECT_DELAY_MS) {
   if (reconnectTimerId !== null) {
     clearTimeout(reconnectTimerId);
@@ -190,7 +374,7 @@ async function findDispatchTab(siteMode) {
 
 async function sendStepToTab(tabId, payload) {
   return chrome.tabs.sendMessage(tabId, {
-    type: "AUTOCHAT_SEND_STEP",
+    type: SEND_STEP_MESSAGE_TYPE,
     ...payload
   });
 }
@@ -221,14 +405,21 @@ async function handleDispatchStep(message) {
       throw new Error(`No ${settings.siteMode} tab available for profile ${settings.profileIdentity}.`);
     }
 
-    await injectScriptsIntoTab(targetTab);
-
-    const result = await sendStepToTab(targetTab.id, {
-      text: message.text,
-      sender: message.sender,
-      stepIndex: message.stepIndex,
-      delayMs: message.delayMs || 0
-    });
+    let result;
+    if (settings.siteMode === "live") {
+      result = await sendLiveStepViaDebugger(targetTab, {
+        text: message.text,
+        delayMs: message.delayMs || 0
+      });
+    } else {
+      await injectScriptsIntoTab(targetTab);
+      result = await sendStepToTab(targetTab.id, {
+        text: message.text,
+        sender: message.sender,
+        stepIndex: message.stepIndex,
+        delayMs: message.delayMs || 0
+      });
+    }
 
     sendSocketMessage({
       type: "step_result",
@@ -396,4 +587,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+injectIntoExistingSupportedTabs().catch((error) => {
+  log(`Boot auto-injection failed: ${error.message}`);
+});
 connectSocket();

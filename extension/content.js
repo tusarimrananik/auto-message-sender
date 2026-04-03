@@ -1,11 +1,15 @@
-if (window.__AUTOCHAT_CONTENT_READY__) {
-  console.log("[AUTOCHAT] Content script already initialized in this tab. Skipping duplicate load.");
+const CONTENT_SCRIPT_VERSION = "ws-redesign-v3";
+const PING_MESSAGE_TYPE = "AUTOCHAT_PING_V3";
+const SEND_STEP_MESSAGE_TYPE = "AUTOCHAT_SEND_STEP_V3";
+
+if (window.__AUTOCHAT_CONTENT_VERSION__ === CONTENT_SCRIPT_VERSION) {
+  console.log("[AUTOCHAT] Content script version already active in this tab. Skipping duplicate load.");
 } else {
-  window.__AUTOCHAT_CONTENT_READY__ = true;
+  window.__AUTOCHAT_CONTENT_VERSION__ = CONTENT_SCRIPT_VERSION;
 
   const LOG_PREFIX = "[AUTOCHAT]";
-  const PAGE_BRIDGE_EVENT = "AUTOCHAT_PAGE_BRIDGE_SEND";
-  const PAGE_BRIDGE_RESULT_EVENT = "AUTOCHAT_PAGE_BRIDGE_RESULT";
+  const PAGE_BRIDGE_EVENT = "AUTOCHAT_PAGE_BRIDGE_SEND_V3";
+  const PAGE_BRIDGE_RESULT_EVENT = "AUTOCHAT_PAGE_BRIDGE_RESULT_V3";
 
   let currentlySending = false;
   let lastCompletedStepIndex = -1;
@@ -264,12 +268,12 @@ if (window.__AUTOCHAT_CONTENT_READY__) {
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message && message.type === "AUTOCHAT_PING") {
-      sendResponse({ ok: true, mode: getSiteModeFromUrl() });
+    if (message && message.type === PING_MESSAGE_TYPE) {
+      sendResponse({ ok: true, mode: getSiteModeFromUrl(), version: CONTENT_SCRIPT_VERSION });
       return false;
     }
 
-    if (!message || message.type !== "AUTOCHAT_SEND_STEP") {
+    if (!message || message.type !== SEND_STEP_MESSAGE_TYPE) {
       return false;
     }
 

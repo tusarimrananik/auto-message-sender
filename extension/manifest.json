@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Local scripted two-profile chat automation MVP.",
   "permissions": [
+    "debugger",
     "storage",
     "tabs",
     "scripting"
