@@ -8,6 +8,7 @@ let currentSettings = { ...STORAGE_DEFAULTS };
 let mutationObserver = null;
 let applyTimerId = null;
 let isApplying = false;
+let rememberedProfilePhotoSources = new Set();
 
 function hasStoredValue(element, datasetKey) {
   return Object.prototype.hasOwnProperty.call(element.dataset, datasetKey);
@@ -130,6 +131,44 @@ function extractOriginalConversationName() {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getAttributeText(element, attributeName) {
+  return (element.getAttribute(attributeName) || "").trim();
+}
+
+function elementMentionsName(element, fullName) {
+  if (!element || !fullName) {
+    return false;
+  }
+
+  const textCandidates = [
+    element.textContent,
+    getAttributeText(element, "aria-label"),
+    getAttributeText(element, "title")
+  ];
+
+  return textCandidates.some((value) => value && value.includes(fullName));
+}
+
+function isImageNearConversationName(image, fullName) {
+  if (!image || !fullName) {
+    return false;
+  }
+
+  let current = image.parentElement;
+  let depth = 0;
+
+  while (current && depth < 6) {
+    if (elementMentionsName(current, fullName)) {
+      return true;
+    }
+
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return false;
 }
 
 function buildNameContext() {
@@ -292,6 +331,13 @@ function findDominantProfilePhotoSource(originalFullName) {
         originalAlt.startsWith(`Seen by ${originalFullName}`))
     ) {
       preferredCounts.set(originalSrc, (preferredCounts.get(originalSrc) || 0) + 1);
+      rememberedProfilePhotoSources.add(originalSrc);
+      continue;
+    }
+
+    if (isImageNearConversationName(image, originalFullName)) {
+      preferredCounts.set(originalSrc, (preferredCounts.get(originalSrc) || 0) + 1);
+      rememberedProfilePhotoSources.add(originalSrc);
     }
   }
 
@@ -368,8 +414,11 @@ function applyPhotoOverrides(originalFullName) {
       !!originalFullName &&
       (originalAlt.includes(originalFullName) ||
         originalAlt.startsWith(`Seen by ${originalFullName}`));
+    const matchesNearbyName = isImageNearConversationName(image, originalFullName);
+    const matchesRememberedSource =
+      !!originalSrc && rememberedProfilePhotoSources.has(originalSrc);
 
-    if (!matchesSource && !matchesAlt) {
+    if (!matchesSource && !matchesAlt && !matchesNearbyName && !matchesRememberedSource) {
       continue;
     }
 
@@ -404,6 +453,8 @@ function restorePhotoOverrides() {
   for (const image of images) {
     restoreAttribute(image, "src", "autochatOriginalSrc");
   }
+
+  rememberedProfilePhotoSources = new Set();
 }
 
 function applyConversationAppearance() {
