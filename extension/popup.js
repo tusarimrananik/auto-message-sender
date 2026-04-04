@@ -1,7 +1,19 @@
 const SERVER_BASE_URL = "http://localhost:3000";
 const LOG_PREFIX = "[AUTOCHAT]";
 
+const STORAGE_DEFAULTS = {
+  profileIdentity: "A",
+  customDisplayName: "",
+  customProfilePhotoUrl: ""
+};
+
 const profileSelect = document.getElementById("profileIdentity");
+const displayNameInput = document.getElementById("displayNameInput");
+const photoUrlInput = document.getElementById("photoUrlInput");
+const photoFileInput = document.getElementById("photoFileInput");
+const saveAppearanceButton = document.getElementById("saveAppearanceButton");
+const clearAppearanceButton = document.getElementById("clearAppearanceButton");
+const appearanceHint = document.getElementById("appearanceHint");
 const loadSampleButton = document.getElementById("loadSampleButton");
 const loadPastedButton = document.getElementById("loadPastedButton");
 const startButton = document.getElementById("startButton");
@@ -33,6 +45,37 @@ function setScriptHint(text, type = "") {
   scriptHint.className = "hint" + (type ? " " + type : "");
 }
 
+function setAppearanceHint(text, type = "") {
+  appearanceHint.textContent = text;
+  appearanceHint.className = "hint" + (type ? " " + type : "");
+}
+
+function updateAppearanceInputs(settings) {
+  displayNameInput.value = settings.customDisplayName || "";
+
+  if (
+    settings.customProfilePhotoUrl &&
+    settings.customProfilePhotoUrl.startsWith("data:")
+  ) {
+    photoUrlInput.value = "";
+    setAppearanceHint("An uploaded image is saved for this profile.", "success");
+    return;
+  }
+
+  photoUrlInput.value = settings.customProfilePhotoUrl || "";
+
+  if (settings.customDisplayName || settings.customProfilePhotoUrl) {
+    setAppearanceHint(
+      "Saved overrides update any open Messenger tabs in this Chrome profile.",
+      "success"
+    );
+  } else {
+    setAppearanceHint(
+      "These changes only affect what this Chrome profile sees in Messenger."
+    );
+  }
+}
+
 /**
  * Parse pasted JSON into a script array.
  * Expects a JSON array of { sender, text } objects.
@@ -44,7 +87,7 @@ function parseScriptJson(raw) {
     throw new Error("Must be a JSON array.");
   }
 
-  for (let i = 0; i < parsed.length; i++) {
+  for (let i = 0; i < parsed.length; i += 1) {
     const step = parsed[i];
     if (!step || typeof step !== "object") {
       throw new Error(`Item at index ${i} is not an object.`);
@@ -68,14 +111,26 @@ function scriptToText(script) {
 }
 
 async function getStoredSettings() {
-  return chrome.storage.local.get({
-    profileIdentity: "A"
+  return chrome.storage.local.get(STORAGE_DEFAULTS);
+}
+
+async function saveStoredSettings(partialSettings = {}) {
+  await chrome.storage.local.set({
+    ...partialSettings,
+    profileIdentity: profileSelect.value
   });
 }
 
-async function saveStoredSettings() {
-  await chrome.storage.local.set({
-    profileIdentity: profileSelect.value
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("error", () => {
+      reject(new Error("Could not read the selected image file."));
+    });
+
+    reader.readAsDataURL(file);
   });
 }
 
@@ -111,10 +166,15 @@ function renderState(state) {
   currentStepStatus.textContent = `${state.currentStep} / ${state.totalSteps}`;
   nextSenderStatus.textContent = state.nextStep ? state.nextStep.sender : "None";
   nextTextStatus.textContent = state.nextStep ? state.nextStep.text : "Finished";
-  workerAStatus.textContent = state.workers && state.workers.A && state.workers.A.connected ? "Online" : "Offline";
-  workerBStatus.textContent = state.workers && state.workers.B && state.workers.B.connected ? "Online" : "Offline";
+  workerAStatus.textContent =
+    state.workers && state.workers.A && state.workers.A.connected
+      ? "Online"
+      : "Offline";
+  workerBStatus.textContent =
+    state.workers && state.workers.B && state.workers.B.connected
+      ? "Online"
+      : "Offline";
 
-  // If textarea is empty and we have a loaded script, show it
   if (!scriptEditor.value.trim() && state.script && state.script.length > 0) {
     scriptEditor.value = scriptToText(state.script);
     setScriptHint(`${state.script.length} messages loaded`, "success");
@@ -140,6 +200,7 @@ async function refreshState() {
 async function initializePopup() {
   const settings = await getStoredSettings();
   profileSelect.value = settings.profileIdentity;
+  updateAppearanceInputs(settings);
 
   await refreshState();
   setInterval(refreshState, 2000);
@@ -151,13 +212,76 @@ profileSelect.addEventListener("change", async () => {
   setMessage(`Saved profile identity: ${profileSelect.value}`);
 });
 
-// Load pasted script from textarea
+photoFileInput.addEventListener("change", () => {
+  if (!photoFileInput.files || photoFileInput.files.length === 0) {
+    return;
+  }
+
+  setAppearanceHint(
+    `Selected image: ${photoFileInput.files[0].name}. Click "Save Appearance" to apply it.`
+  );
+});
+
+saveAppearanceButton.addEventListener("click", async () => {
+  try {
+    const customDisplayName = displayNameInput.value.trim();
+    let customProfilePhotoUrl = photoUrlInput.value.trim();
+
+    if (photoFileInput.files && photoFileInput.files.length > 0) {
+      customProfilePhotoUrl = await readFileAsDataUrl(photoFileInput.files[0]);
+    }
+
+    await saveStoredSettings({
+      customDisplayName,
+      customProfilePhotoUrl
+    });
+
+    photoFileInput.value = "";
+    updateAppearanceInputs({
+      customDisplayName,
+      customProfilePhotoUrl
+    });
+
+    if (!customDisplayName && !customProfilePhotoUrl) {
+      setMessage("Appearance overrides cleared for this profile.");
+    } else {
+      setMessage(
+        "Appearance overrides saved. Open Messenger tabs will update automatically."
+      );
+    }
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
+clearAppearanceButton.addEventListener("click", async () => {
+  try {
+    displayNameInput.value = "";
+    photoUrlInput.value = "";
+    photoFileInput.value = "";
+
+    await saveStoredSettings({
+      customDisplayName: "",
+      customProfilePhotoUrl: ""
+    });
+
+    updateAppearanceInputs({
+      customDisplayName: "",
+      customProfilePhotoUrl: ""
+    });
+
+    setMessage("Appearance overrides removed for this profile.");
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
 loadPastedButton.addEventListener("click", async () => {
   try {
     const rawText = scriptEditor.value.trim();
 
     if (!rawText) {
-      setScriptHint("Paste your chat messages first!", "error");
+      setScriptHint("Paste your chat messages first.", "error");
       return;
     }
 
@@ -178,24 +302,25 @@ loadPastedButton.addEventListener("click", async () => {
     await callServer("/script/load", { method: "POST", body: { script } });
     await triggerDispatchNow();
     await refreshState();
-    setScriptHint(`✓ Loaded ${script.length} messages`, "success");
+    setScriptHint(`Loaded ${script.length} messages.`, "success");
     setMessage("Custom script loaded.");
   } catch (error) {
     setScriptHint(error.message, "error");
   }
 });
 
-// Load default script from server file
 loadSampleButton.addEventListener("click", async () => {
   try {
     await saveStoredSettings();
     const data = await callServer("/script/load", { method: "POST", body: {} });
     await triggerDispatchNow();
 
-    // Update textarea with the loaded script
     if (data.state && data.state.script) {
       scriptEditor.value = scriptToText(data.state.script);
-      setScriptHint(`✓ Loaded ${data.state.script.length} default messages`, "success");
+      setScriptHint(
+        `Loaded ${data.state.script.length} default messages.`,
+        "success"
+      );
     }
 
     await refreshState();
@@ -210,7 +335,11 @@ startButton.addEventListener("click", async () => {
     await saveStoredSettings();
     const readyResult = await ensureMessengerReady();
     if (!readyResult || !readyResult.ok) {
-      throw new Error(readyResult && readyResult.error ? readyResult.error : "Could not find a ready Messenger tab.");
+      throw new Error(
+        readyResult && readyResult.error
+          ? readyResult.error
+          : "Could not find a ready Messenger tab."
+      );
     }
 
     await callServer("/run/start", { method: "POST", body: {} });
@@ -244,7 +373,6 @@ resetButton.addEventListener("click", async () => {
   }
 });
 
-// Live parse feedback as user types/pastes
 scriptEditor.addEventListener("input", () => {
   const raw = scriptEditor.value.trim();
   if (!raw) {
@@ -254,9 +382,11 @@ scriptEditor.addEventListener("input", () => {
 
   try {
     const script = parseScriptJson(raw);
-    setScriptHint(`${script.length} messages detected — click "Load Pasted Script" to use.`);
-  } catch (err) {
-    setScriptHint("Invalid JSON: " + err.message, "error");
+    setScriptHint(
+      `${script.length} messages detected - click "Load Pasted Script" to use.`
+    );
+  } catch (error) {
+    setScriptHint("Invalid JSON: " + error.message, "error");
   }
 });
 

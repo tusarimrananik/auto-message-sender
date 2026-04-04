@@ -16,23 +16,60 @@
           <option value="A">A</option>
           <option value="B">B</option>
         </select>
-        <p class="hint">Messenger only. Live sends use Chrome debugger, so Chrome may show a debugging banner while messages are being sent.</p>
+        <p class="hint">
+          Messenger only. Live sends use Chrome debugger, so Chrome may show a
+          debugging banner while messages are being sent.
+        </p>
+      </section>
+
+      <section class="panel">
+        <label for="displayNameInput">Conversation Name</label>
+        <input
+          id="displayNameInput"
+          type="text"
+          placeholder="Enter the name you want to show"
+        />
+
+        <label for="photoUrlInput">Profile Picture URL</label>
+        <input
+          id="photoUrlInput"
+          type="url"
+          placeholder="https://example.com/profile.jpg"
+        />
+
+        <label for="photoFileInput">Or Upload A Picture</label>
+        <input id="photoFileInput" type="file" accept="image/*" />
+
+        <div class="editor-actions">
+          <button id="saveAppearanceButton">Save Appearance</button>
+          <button id="clearAppearanceButton" class="secondary">
+            Clear Appearance
+          </button>
+        </div>
+        <p class="hint" id="appearanceHint">
+          These changes only affect what this Chrome profile sees in Messenger.
+        </p>
       </section>
 
       <section class="panel script-editor-panel">
         <label for="scriptEditor">Chat Script</label>
-        <textarea id="scriptEditor" placeholder='Paste your chat script as JSON:&#10;&#10;[&#10;  { "sender": "A", "text": "Hello" },&#10;  { "sender": "B", "text": "Hi there!" }&#10;]'></textarea>
+        <textarea
+          id="scriptEditor"
+          placeholder='Paste your chat script as JSON:&#10;&#10;[&#10;  { "sender": "A", "text": "Hello" },&#10;  { "sender": "B", "text": "Hi there!" }&#10;]'
+        ></textarea>
         <div class="editor-actions">
           <button id="loadPastedButton">Load Pasted Script</button>
-          <button id="loadSampleButton" class="secondary">Load Default Script</button>
+          <button id="loadSampleButton" class="secondary">
+            Load Default Script
+          </button>
         </div>
         <p class="hint" id="scriptHint"></p>
       </section>
 
       <section class="panel button-grid">
-        <button id="startButton">▶ Start</button>
-        <button id="stopButton">⏹ Stop</button>
-        <button id="resetButton" class="secondary">↺ Reset</button>
+        <button id="startButton">Start</button>
+        <button id="stopButton">Stop</button>
+        <button id="resetButton" class="secondary">Reset</button>
       </section>
 
       <section class="panel status-panel">
